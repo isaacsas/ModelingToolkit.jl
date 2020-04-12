@@ -1,6 +1,6 @@
 function lower_varname(var::Variable, idv, order)
     order == 0 && return var
-    name = Symbol(var.name, :_, string(idv.name)^order)
+    name = Symbol(var.name, :_, string(idv.op.name)^order)
     return Variable{vartype(var)}(name)
 end
 
@@ -24,14 +24,18 @@ function ode_order_lowering(eqs, iv)
     new_vars = Variable[]
 
     for (i, eq) ∈ enumerate(eqs)
-        var, maxorder = var_from_nested_derivative(eq.lhs)
-        if maxorder > get(var_order, var, 0)
-            var_order[var] = maxorder
-            any(isequal(var), vars) || push!(vars, var)
+        if isequal(eq.lhs, Constant(0))
+            push!(new_eqs, eq)
+        else
+            var, maxorder = var_from_nested_derivative(eq.lhs)
+            if maxorder > get(var_order, var, 0)
+                var_order[var] = maxorder
+                any(isequal(var), vars) || push!(vars, var)
+            end
+            var′ = lower_varname(var, iv, maxorder - 1)
+            rhs′ = rename_lower_order(eq.rhs)
+            push!(new_eqs, Differential(iv)(var′(iv)) ~ rhs′)
         end
-        var′ = lower_varname(var, iv, maxorder - 1)
-        rhs′ = rename_lower_order(eq.rhs)
-        push!(new_eqs,Differential(iv())(var′(iv())) ~ rhs′)
     end
 
     for var ∈ vars
@@ -41,8 +45,8 @@ function ode_order_lowering(eqs, iv)
             rvar = lower_varname(var, iv, o)
             push!(new_vars, rvar)
 
-            rhs = rvar(iv())
-            eq = Differential(iv())(lvar(iv())) ~ rhs
+            rhs = rvar(iv)
+            eq = Differential(iv)(lvar(iv)) ~ rhs
             push!(new_eqs, eq)
         end
     end
