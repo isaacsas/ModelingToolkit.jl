@@ -65,6 +65,7 @@ vartype(::Variable{T}) where T = T
 rename(x::Variable{T},name) where T = Variable{T}(name)
 
 Base.isequal(x::Variable, y::Variable) = x.name == y.name
+Base.hash(v::Variable, salt::UInt) = hash(v.name, salt)
 Base.print(io::IO, x::Variable) = show(io, x)
 Base.show(io::IO, x::Variable) = print(io, x.name)
 function Base.show(io::IO, ::MIME"text/plain", x::Variable)

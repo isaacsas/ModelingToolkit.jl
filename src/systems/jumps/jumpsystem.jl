@@ -169,6 +169,26 @@ end
 #     maj  = MassActionJump(rval, rs, ns, scale_rates = false)
 #     maj
 # end
+
+function varmap_to_vars_dict(varmap::AbstractArray{<:Pair{S,T}}, varlist::AbstractVector{Variable}) where {S <: Operation,T}
+    vard = Dict( v[1].op.name => v[2] for v in varmap)    
+    [vard[v.name] for v in varlist]
+end
+
+function varmap_to_vars_dict(varmap::AbstractArray{<:Pair{S,T}}, varlist::AbstractVector{Variable}) where {S <: Variable,T}
+    vard = Dict( v[1].name => v[2] for v in varmap)    
+    [vard[v.name] for v in varlist]
+end
+
+# for if Dicts are ever supported as input maps
+# function varmap_to_vars_dict(varmap::Dict{S,T}, varlist::AbstractVector{Variable}) where {S <: Variable,T}
+#     [varmap[v] for v in varlist]
+# end
+
+# function varmap_to_vars_dict(varmap::Dict{S,T}, varlist::AbstractVector{Variable}) where {S <: Operation,T}
+#     [varmap[v()] for v in varlist]
+# end
+
 """
 ```julia
 function DiffEqBase.DiscreteProblem(sys::JumpSystem, u0map, tspan,
@@ -191,16 +211,9 @@ dprob = DiscreteProblem(js, u₀map, tspan, parammap)
 function DiffEqBase.DiscreteProblem(sys::JumpSystem, u0map, tspan::Tuple,
                                     parammap=DiffEqBase.NullParameters(); kwargs...)
 
-    (u0map isa AbstractVector) || error("For DiscreteProblems u0map must be an AbstractVector.")
-    u0d = Dict( convert(Variable,u[1]) => u[2] for u in u0map)
-    u0 = [u0d[u] for u in states(sys)]
-    if parammap != DiffEqBase.NullParameters()
-        (parammap isa AbstractVector) || error("For DiscreteProblems parammap must be an AbstractVector.")
-        pd  = Dict( convert(Variable,u[1]) => u[2] for u in parammap)
-        p  = [pd[u] for u in parameters(sys)]
-    else
-        p = parammap
-    end
+    u0 = varmap_to_vars_dict(u0map, states(sys))
+    p = (parammap == DiffEqBase.NullParameters()) ? parammap : varmap_to_vars_dict(parammap, parameters(sys))
+
     # EvalFunc because we know that the jump functions are generated via eval
     f  = DiffEqBase.EvalFunc(DiffEqBase.DISCRETE_INPLACE_DEFAULT)
     df = DiscreteFunction(f, syms=Symbol.(states(sys)))
@@ -228,8 +241,10 @@ dprob = DiscreteProblem(js, u₀map, tspan, parammap)
 """
 function DiscreteProblemExpr(sys::JumpSystem, u0map, tspan::Tuple,
                                     parammap=DiffEqBase.NullParameters(); kwargs...)
-    u0 = varmap_to_vars(u0map, states(sys))
-    p  = varmap_to_vars(parammap, parameters(sys))
+
+    u0 = varmap_to_vars_dict(u0map, states(sys))
+    p = (parammap == DiffEqBase.NullParameters()) ? parammap : varmap_to_vars_dict(parammap, parameters(sys))
+
     # identity function to make syms works
     # EvalFunc because we know that the jump functions are generated via eval
     quote
@@ -241,6 +256,8 @@ function DiscreteProblemExpr(sys::JumpSystem, u0map, tspan::Tuple,
         DiscreteProblem(df, u0, tspan, p; kwargs...)
     end
 end
+
+using TimerOutputs
 
 """
 ```julia
@@ -257,7 +274,8 @@ sol = solve(jprob, SSAStepper())
 """
 function DiffEqJump.JumpProblem(js::JumpSystem, prob, aggregator; kwargs...)
 
-    statetoid = Dict(convert(Variable,state) => i for (i,state) in enumerate(states(js)))
+    sts       = states(js)
+    statetoid = Dict(state => i for (i,state) in enumerate(sts))
     eqs       = equations(js)
     invttype  = typeof(1 / prob.tspan[2])
 
@@ -265,23 +283,27 @@ function DiffEqJump.JumpProblem(js::JumpSystem, prob, aggregator; kwargs...)
     p = (prob.p == DiffEqBase.NullParameters()) ? Operation[] : prob.p
     parammap  = map((x,y)->Pair(x(),y), parameters(js), p)
     subber    = substituter(parammap)
-
-    majs = MassActionJump[assemble_maj(j, statetoid, subber, invttype) for j in eqs.x[1]]
+   
+    to = TimerOutput()
+    @timeit to "majs" majs = MassActionJump[assemble_maj(j, statetoid, subber, invttype) for j in eqs.x[1]]
     crjs = ConstantRateJump[assemble_crj(js, j, statetoid) for j in eqs.x[2]]
     vrjs = VariableRateJump[assemble_vrj(js, j, statetoid) for j in eqs.x[3]]
     ((prob isa DiscreteProblem) && !isempty(vrjs)) && error("Use continuous problems such as an ODEProblem or a SDEProblem with VariableRateJumps")
     jset = JumpSet(Tuple(vrjs), Tuple(crjs), nothing, isempty(majs) ? nothing : majs)
 
     if needs_vartojumps_map(aggregator) || needs_depgraph(aggregator)
-        variables = Set(states(js))
-        jdeps = asgraph(js, variables=variables)
-        vdeps = variable_dependencies(js, variables=variables)
+        @timeit to "set" variables = Set{typeof(first(sts))}(sts)
+        @timeit to "dict" variablestoids = Dict( st.name => i for (i,st) in enumerate(sts))         
+        @timeit to "asgraph" jdeps = asgraph(js, variables=variables, variablestoids=variablestoids)
+        @timeit to "vdeps" vdeps = variable_dependencies(js, variables=variables, variablestoids=variablestoids)
         vtoj = jdeps.badjlist
         jtov = vdeps.badjlist
-        jtoj = needs_depgraph(aggregator) ? eqeq_dependencies(jdeps, vdeps).fadjlist : nothing
+        @timeit to "eqeq_deps" jtoj = needs_depgraph(aggregator) ? eqeq_dependencies(jdeps, vdeps).fadjlist : nothing
     else
         vtoj = nothing; jtov = nothing; jtoj = nothing
     end
+
+    @show to
 
     JumpProblem(prob, aggregator, jset; dep_graph=jtoj, vartojumps_map=vtoj, jumptovars_map=jtov, kwargs...)
 end

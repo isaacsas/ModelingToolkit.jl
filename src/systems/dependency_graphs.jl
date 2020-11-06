@@ -41,14 +41,14 @@ equation_dependencies(jumpsys)
 equation_dependencies(jumpsys, variables=parameters(jumpsys))    
 ```
 """
-function equation_dependencies(sys::AbstractSystem; variables=Set(states(sys)))
+function equation_dependencies(sys::AbstractSystem; variables=Set{typeof(first(sts))}(states(sys)))
     eqs  = equations(sys)
-    deps = Set{Operation}()
-    depeqs_to_vars = Vector{Vector{Variable}}(undef,length(eqs))
+    deps = Vector{Operation}()
+    depeqs_to_vars = Vector{Vector{Symbol}}(undef,length(eqs))
 
     for (i,eq) in enumerate(eqs)      
         get_variables!(deps, eq, variables)
-        depeqs_to_vars[i] = [convert(Variable,v) for v in deps]
+        depeqs_to_vars[i] = [v.op.name for v in deps]
         empty!(deps)
     end
 
@@ -126,7 +126,7 @@ digr = asgraph(equation_dependencies(odesys), Dict(s => i for (i,s) in enumerate
 function asgraph(eqdeps, vtois)    
     fadjlist = Vector{Vector{Int}}(undef, length(eqdeps))
     for (i,dep) in enumerate(eqdeps)
-        fadjlist[i] = sort!([vtois[var] for var in dep])
+        fadjlist[i] = sort!([vtois[var.name] for var in dep])
     end
 
     badjlist = [Vector{Int}() for i = 1:length(vtois)]
@@ -144,7 +144,7 @@ end
 """
 ```julia
 asgraph(sys::AbstractSystem; variables=Set(state(sys)), 
-                                      variablestoids=Dict(convert(Variable, v) => i for (i,v) in enumerate(variables)))
+                                      variablestoids=Dict(v => i for (i,v) in enumerate(variables)))
 ```
 
 Convert an `AbstractSystem` to a [`BipartiteGraph`](@ref) mapping the index of equations
@@ -165,7 +165,7 @@ digr = asgraph(odesys)
 ```
 """
 function asgraph(sys::AbstractSystem; variables=Set(states(sys)), 
-                                      variablestoids=Dict(convert(Variable, v) => i for (i,v) in enumerate(variables)))
+                                      variablestoids=Dict(v => i for (i,v) in enumerate(variables)))
     asgraph(equation_dependencies(sys, variables=variables), variablestoids)
 end
 
@@ -190,13 +190,13 @@ variable_dependencies(odesys)
 """
 function variable_dependencies(sys::AbstractSystem; variables=Set(states(sys)), variablestoids=nothing)
     eqs   = equations(sys)
-    vtois = isnothing(variablestoids) ? Dict(convert(Variable, v) => i for (i,v) in enumerate(variables)) : variablestoids
+    vtois = isnothing(variablestoids) ? Dict(v => i for (i,v) in enumerate(variables)) : variablestoids
 
     deps = Set{Operation}()
     badjlist = Vector{Vector{Int}}(undef, length(eqs))    
     for (eidx,eq) in enumerate(eqs)
         modified_states!(deps, eq, variables)
-        badjlist[eidx] = sort!([vtois[convert(Variable,var)] for var in deps])
+        badjlist[eidx] = sort!([vtois[var.op.name] for var in deps])
         empty!(deps)
     end
 
@@ -276,9 +276,9 @@ eqeqdep = eqeq_dependencies(asgraph(odesys), variable_dependencies(odesys))
 function eqeq_dependencies(eqdeps::BipartiteGraph{T}, vardeps::BipartiteGraph{T}) where {T <: Integer}
     g = SimpleDiGraph{T}(length(eqdeps.fadjlist))
     
-    for (eqidx,sidxs) in enumerate(vardeps.badjlist)
+    @inbounds for (eqidx,sidxs) in enumerate(vardeps.badjlist)
         # states modified by eqidx
-        for sidx in sidxs
+        @inbounds for sidx in sidxs
             # equations depending on sidx
             foreach(v -> add_edge!(g, eqidx, v), eqdeps.badjlist[sidx])
         end
