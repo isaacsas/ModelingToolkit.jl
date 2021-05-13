@@ -153,3 +153,21 @@ dprob = DiscreteProblem(js4, [S => 999], (0,1000.), [β => 100.,γ => .01])
 jprob = JumpProblem(js4, dprob, Direct())
 sol = solve(jprob, SSAStepper());
 
+# continuous rate problem test
+# https://github.com/SciML/ModelingToolkit.jl/issues/383
+using ModelingToolkit, DiffEqJump, OrdinaryDiffEq
+@parameters β γ t
+@variables S I R
+rate₁   = β*S*I
+affect₁ = [S ~ S - 1, I ~ I + 1]
+rate₂   = γ*I*exp(-t/20)
+affect₂ = [I ~ I - 1, R ~ R + 1]
+j₁      = ConstantRateJump(rate₁,affect₁)
+j₂      = VariableRateJump(rate₂,affect₂)
+js      = JumpSystem([j₁,j₂], t, [S,I,R], [β,γ])
+u₀ = [999,1,0]; p = (0.1/1000,0.01); tspan = (0.,250.)
+u₀map = [S => 999, I => 1, R => 0]
+parammap = [β => .1/1000, γ => .01]
+oprob = ODEProblem((du,u,p,t) -> du .= 0, u₀, tspan, p)
+jprob = JumpProblem(js, oprob, Direct())
+sol = solve(jprob, Tsit5())

@@ -288,7 +288,6 @@ function DiffEqJump.JumpProblem(js::JumpSystem, prob, aggregator; kwargs...)
     else
         vtoj = nothing; jtov = nothing; jtoj = nothing
     end
-
     JumpProblem(prob, aggregator, jset; dep_graph=jtoj, vartojumps_map=vtoj, jumptovars_map=jtov, kwargs...)
 end
 
