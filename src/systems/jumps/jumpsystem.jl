@@ -33,12 +33,12 @@ struct JumpSystem{U <: ArrayPartition} <: AbstractSystem
     eqs::U
     """The independent variable, usually time."""
     iv::Any
-    """The dependent variables, representing the state of the system."""
+    """The dependent variables, representing the state of the system.  Must not contain the independent variable."""
     states::Vector
-    """The parameters of the system."""
+    """The parameters of the system. Must not contain the independent variable."""
     ps::Vector
     observed::Vector{Equation}
-    """The name of the system."""
+    """The name of the system. . These are required to have unique names."""
     name::Symbol
     """The internal systems."""
     systems::Vector{JumpSystem}
@@ -47,6 +47,15 @@ struct JumpSystem{U <: ArrayPartition} <: AbstractSystem
     parameters are not supplied in `ODEProblem`.
     """
     defaults::Dict
+    """
+    type: type of the system
+    """
+    connection_type::Any
+    function JumpSystem{U}(ap::U, iv, states, ps, observed, name, systems, defaults, connection_type) where U <: ArrayPartition
+        check_variables(states, iv)
+        check_parameters(ps, iv)
+        new{U}(ap, iv, states, ps, observed, name, systems, defaults, connection_type)
+    end
 end
 
 function JumpSystem(eqs, iv, states, ps;
@@ -55,8 +64,14 @@ function JumpSystem(eqs, iv, states, ps;
                     default_u0=Dict(),
                     default_p=Dict(),
                     defaults=_merge(Dict(default_u0), Dict(default_p)),
-                    name = gensym(:JumpSystem))
-
+                    name = gensym(:JumpSystem),
+                    connection_type=nothing,
+                    kwargs...)
+                    
+    sysnames = nameof.(systems)
+    if length(unique(sysnames)) != length(sysnames)
+        throw(ArgumentError("System names must be unique."))
+    end
     ap = ArrayPartition(MassActionJump[], ConstantRateJump[], VariableRateJump[])
     for eq in eqs
         if eq isa MassActionJump
@@ -75,7 +90,7 @@ function JumpSystem(eqs, iv, states, ps;
     defaults = todict(defaults)
     defaults = Dict(value(k) => value(v) for (k, v) in pairs(defaults))
 
-    JumpSystem{typeof(ap)}(ap, value(iv), value.(states), value.(ps), observed, name, systems, defaults)
+    JumpSystem{typeof(ap)}(ap, value(iv), value.(states), value.(ps), observed, name, systems, defaults, connection_type)
 end
 
 function generate_rate_function(js, rate)

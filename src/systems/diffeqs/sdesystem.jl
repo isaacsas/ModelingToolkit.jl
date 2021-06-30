@@ -33,9 +33,9 @@ struct SDESystem <: AbstractODESystem
     noiseeqs::AbstractArray
     """Independent variable."""
     iv::Sym
-    """Dependent (state) variables."""
+    """Dependent (state) variables. Must not contain the independent variable."""
     states::Vector
-    """Parameter variables."""
+    """Parameter variables. Must not contain the independent variable."""
     ps::Vector
     observed::Vector
     """
@@ -63,7 +63,7 @@ struct SDESystem <: AbstractODESystem
     """
     name::Symbol
     """
-    Systems: the internal systems
+    Systems: the internal systems. These are required to have unique names.
     """
     systems::Vector{SDESystem}
     """
@@ -71,6 +71,17 @@ struct SDESystem <: AbstractODESystem
     parameters are not supplied in `ODEProblem`.
     """
     defaults::Dict
+    """
+    type: type of the system
+    """
+    connection_type::Any
+
+    function SDESystem(deqs, neqs, iv, dvs, ps, observed, tgrad, jac, Wfact, Wfact_t, name, systems, defaults, connection_type)
+        check_variables(dvs,iv)
+        check_parameters(ps,iv)
+        check_equations(deqs,iv)
+        new(deqs, neqs, iv, dvs, ps, observed, tgrad, jac, Wfact, Wfact_t, name, systems, defaults, connection_type)
+    end
 end
 
 function SDESystem(deqs::AbstractVector{<:Equation}, neqs, iv, dvs, ps;
@@ -79,11 +90,16 @@ function SDESystem(deqs::AbstractVector{<:Equation}, neqs, iv, dvs, ps;
                    default_u0=Dict(),
                    default_p=Dict(),
                    defaults=_merge(Dict(default_u0), Dict(default_p)),
-                   name = gensym(:SDESystem))
+                   name = gensym(:SDESystem),
+                   connection_type=nothing,
+                   )
     iv′ = value(iv)
     dvs′ = value.(dvs)
     ps′ = value.(ps)
-
+    sysnames = nameof.(systems)
+    if length(unique(sysnames)) != length(sysnames)
+        throw(ArgumentError("System names must be unique."))
+    end
     if !(isempty(default_u0) && isempty(default_p))
         Base.depwarn("`default_u0` and `default_p` are deprecated. Use `defaults` instead.", :SDESystem, force=true)
     end
@@ -94,7 +110,7 @@ function SDESystem(deqs::AbstractVector{<:Equation}, neqs, iv, dvs, ps;
     jac = RefValue{Any}(Matrix{Num}(undef, 0, 0))
     Wfact   = RefValue(Matrix{Num}(undef, 0, 0))
     Wfact_t = RefValue(Matrix{Num}(undef, 0, 0))
-    SDESystem(deqs, neqs, iv′, dvs′, ps′, observed, tgrad, jac, Wfact, Wfact_t, name, systems, defaults)
+    SDESystem(deqs, neqs, iv′, dvs′, ps′, observed, tgrad, jac, Wfact, Wfact_t, name, systems, defaults, connection_type)
 end
 
 function generate_diffusion_function(sys::SDESystem, dvs = states(sys), ps = parameters(sys); kwargs...)
@@ -160,6 +176,9 @@ function DiffEqBase.SDEFunction{iip}(sys::SDESystem, dvs = states(sys), ps = par
                                      u0 = nothing;
                                      version = nothing, tgrad=false, sparse = false,
                                      jac = false, Wfact = false, eval_expression = true, kwargs...) where {iip}
+    dvs = scalarize.(dvs)
+    ps = scalarize.(ps)
+
     f_gen = generate_function(sys, dvs, ps; expression=Val{eval_expression}, kwargs...)
     f_oop,f_iip = eval_expression ? (@RuntimeGeneratedFunction(ex) for ex in f_gen) : f_gen
     g_gen = generate_diffusion_function(sys, dvs, ps; expression=Val{eval_expression}, kwargs...)

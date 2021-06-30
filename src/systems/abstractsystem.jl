@@ -153,11 +153,11 @@ for prop in [
              :inequality_constraints
              :controls
              :loss
-             :reduced_states
              :bcs
              :domain
              :depvars
              :indvars
+             :connection_type
             ]
     fname1 = Symbol(:get_, prop)
     fname2 = Symbol(:has_, prop)
@@ -226,14 +226,14 @@ function Base.getproperty(sys::AbstractSystem, name::Symbol; namespace=true)
     i = findfirst(x->getname(x) == name, sts)
 
     if i !== nothing
-        return namespace ? rename(sts[i],renamespace(sysname,name)) : sts[i]
+        return namespace ? renamespace(sysname,sts[i]) : sts[i]
     end
 
     if has_ps(sys)
         ps = get_ps(sys)
         i = findfirst(x->getname(x) == name,ps)
         if i !== nothing
-            return namespace ? rename(ps[i],renamespace(sysname,name)) : ps[i]
+            return namespace ? renamespace(sysname,ps[i]) : ps[i]
         end
     end
 
@@ -241,11 +241,11 @@ function Base.getproperty(sys::AbstractSystem, name::Symbol; namespace=true)
         obs = get_observed(sys)
         i = findfirst(x->getname(x.lhs)==name,obs)
         if i !== nothing
-            return namespace ? rename(obs[i].lhs,renamespace(sysname,name)) : obs[i]
+            return namespace ? renamespace(sysname,obs[i]) : obs[i]
         end
     end
 
-    throw(error("Variable $name does not exist"))
+    throw(ArgumentError("Variable $name does not exist"))
 end
 
 function Base.setproperty!(sys::AbstractSystem, prop::Symbol, val)
@@ -268,13 +268,32 @@ function Base.setproperty!(sys::AbstractSystem, prop::Symbol, val)
     end
 end
 
+abstract type SymScope end
+
+struct LocalScope <: SymScope end
+LocalScope(sym::Union{Num, Symbolic}) = setmetadata(sym, SymScope, LocalScope())
+
+struct ParentScope <: SymScope
+    parent::SymScope
+end
+ParentScope(sym::Union{Num, Symbolic}) = setmetadata(sym, SymScope, ParentScope(getmetadata(value(sym), SymScope, LocalScope())))
+
+struct GlobalScope <: SymScope end
+GlobalScope(sym::Union{Num, Symbolic}) = setmetadata(sym, SymScope, GlobalScope())
+
 function renamespace(namespace, x)
     if x isa Num
         renamespace(namespace, value(x))
-    elseif istree(x)
-        renamespace(namespace, operation(x))(arguments(x)...)
-    elseif x isa Sym
-        Sym{symtype(x)}(renamespace(namespace,nameof(x)))
+    elseif x isa Symbolic
+        let scope = getmetadata(x, SymScope, LocalScope())
+            if scope isa LocalScope
+                rename(x, renamespace(namespace, getname(x)))
+            elseif scope isa ParentScope
+                setmetadata(x, SymScope, scope.parent)
+            else # GlobalScope
+                x
+            end
+        end
     else
         Symbol(namespace,:₊,x)
     end
@@ -302,16 +321,16 @@ function namespace_equation(eq::Equation,name,iv)
 end
 
 function namespace_expr(O::Sym,name,iv)
-    isequal(O, iv) ? O : rename(O,renamespace(name,nameof(O)))
+    isequal(O, iv) ? O : renamespace(name,O)
 end
 
 _symparam(s::Symbolic{T}) where {T} = T
 function namespace_expr(O,name,iv) where {T}
+    O = value(O)
     if istree(O)
         renamed = map(a->namespace_expr(a,name,iv), arguments(O))
         if operation(O) isa Sym
-            renamed_op = rename(operation(O),renamespace(name,nameof(operation(O))))
-            Term{_symparam(O)}(renamed_op,renamed)
+            rename(O,getname(renamespace(name, O)))
         else
             similarterm(O,operation(O),renamed)
         end
@@ -392,6 +411,103 @@ function (f::AbstractSysToExpr)(O)
     return build_expr(:call, Any[operation(O); f.(arguments(O))])
 end
 
+###
+### System utils
+###
+function push_vars!(stmt, name, typ, vars)
+    isempty(vars) && return
+    vars_expr = Expr(:macrocall, typ, nothing)
+    for s in vars
+        if istree(s)
+            f = nameof(operation(s))
+            args = arguments(s)
+            ex = :($f($(args...)))
+        else
+            ex = nameof(s)
+        end
+        push!(vars_expr.args, ex)
+    end
+    push!(stmt, :($name = $collect($vars_expr)))
+    return
+end
+
+function round_trip_expr(t, var2name)
+    name = get(var2name, t, nothing)
+    name !== nothing && return name
+    t isa Sym && return nameof(t)
+    istree(t) || return t
+    f = round_trip_expr(operation(t), var2name)
+    args = map(Base.Fix2(round_trip_expr, var2name), arguments(t))
+    return :($f($(args...)))
+end
+round_trip_eq(eq, var2name) = Expr(:call, :~, round_trip_expr(eq.lhs, var2name), round_trip_expr(eq.rhs, var2name))
+
+function push_eqs!(stmt, eqs, var2name)
+    eqs_name = gensym(:eqs)
+    eqs_expr = Expr(:vcat)
+    eqs_blk = Expr(:(=), eqs_name, eqs_expr)
+    for eq in eqs
+        push!(eqs_expr.args, round_trip_eq(eq, var2name))
+    end
+
+    push!(stmt, eqs_blk)
+    return eqs_name
+end
+
+function push_defaults!(stmt, defs, var2name)
+    defs_name = gensym(:defs)
+    defs_expr = Expr(:call, Dict)
+    defs_blk = Expr(:(=), defs_name, defs_expr)
+    for d in defs
+        n = round_trip_expr(d.first, var2name)
+        v = round_trip_expr(d.second, var2name)
+        push!(defs_expr.args, :($(=>)($n, $v)))
+    end
+
+    push!(stmt, defs_blk)
+    return defs_name
+end
+
+###
+### System I/O
+###
+function toexpr(sys::AbstractSystem)
+    sys = flatten(sys)
+    expr = Expr(:block)
+    stmt = expr.args
+
+    iv = independent_variable(sys)
+    ivname = gensym(:iv)
+    if iv !== nothing
+        push!(stmt, :($ivname = (@variables $(getname(iv)))[1]))
+    end
+
+    stsname = gensym(:sts)
+    sts = states(sys)
+    push_vars!(stmt, stsname, Symbol("@variables"), sts)
+    psname = gensym(:ps)
+    ps = parameters(sys)
+    push_vars!(stmt, psname, Symbol("@parameters"), ps)
+
+    var2name = Dict{Any,Symbol}()
+    for v in Iterators.flatten((sts, ps))
+        var2name[v] = getname(v)
+    end
+
+    eqs_name = push_eqs!(stmt, equations(sys), var2name)
+    defs_name = push_defaults!(stmt, defaults(sys), var2name)
+
+    if sys isa ODESystem
+        push!(stmt, :($ODESystem($eqs_name, $ivname, $stsname, $psname; defaults=$defs_name)))
+    elseif sys isa NonlinearSystem
+        push!(stmt, :($NonlinearSystem($eqs_name, $stsname, $psname; defaults=$defs_name)))
+    end
+
+    striplines(expr) # keeping the line numbers is never helpful
+end
+
+Base.write(io::IO, sys::AbstractSystem) = write(io, readable_code(toexpr(sys)))
+
 function Base.show(io::IO, ::MIME"text/plain", sys::AbstractSystem)
     eqs = equations(sys)
     if eqs isa AbstractArray
@@ -419,7 +535,9 @@ function Base.show(io::IO, ::MIME"text/plain", sys::AbstractSystem)
         if defs !== nothing
             val = get(defs, s, nothing)
             if val !== nothing
-                print(io, " [defaults to $val]")
+                print(io, " [defaults to ")
+                show(IOContext(io, :compact=>true, :limit=>true, :displaysize=>(1,displaysize(io)[2])), val)
+                print(io, "]")
             end
         end
     end
@@ -437,7 +555,9 @@ function Base.show(io::IO, ::MIME"text/plain", sys::AbstractSystem)
         if defs !== nothing
             val = get(defs, s, nothing)
             if val !== nothing
-                print(io, " [defaults to $val]")
+                print(io, " [defaults to ")
+                show(IOContext(io, :compact=>true, :limit=>true, :displaysize=>(1,displaysize(io)[2])), val)
+                print(io, "]")
             end
         end
     end
@@ -523,8 +643,13 @@ Structurally simplify algebraic equations in a system and compute the
 topological sort of the observed equations.
 """
 function structural_simplify(sys::AbstractSystem)
-    sys = tearing(alias_elimination(sys))
-    fullstates = [get_reduced_states(sys); states(sys)]
+    sys = initialize_system_structure(alias_elimination(sys))
+    check_consistency(structure(sys))
+    if sys isa ODESystem
+        sys = dae_index_lowering(sys)
+    end
+    sys = tearing(sys)
+    fullstates = [map(eq->eq.lhs, observed(sys)); states(sys)]
     @set! sys.observed = topsort_equations(observed(sys), fullstates)
     return sys
 end
@@ -543,3 +668,83 @@ Base.showerror(io::IO, e::InvalidSystemException) = print(io, "InvalidSystemExce
 AbstractTrees.children(sys::ModelingToolkit.AbstractSystem) = ModelingToolkit.get_systems(sys)
 AbstractTrees.printnode(io::IO, sys::ModelingToolkit.AbstractSystem) = print(io, nameof(sys))
 AbstractTrees.nodetype(::ModelingToolkit.AbstractSystem) = ModelingToolkit.AbstractSystem
+
+function check_eqs_u0(eqs, dvs, u0; check_length=true, kwargs...)
+    if u0 !== nothing
+        if check_length
+            if !(length(eqs) == length(dvs) == length(u0))
+                throw(ArgumentError("Equations ($(length(eqs))), states ($(length(dvs))), and initial conditions ($(length(u0))) are of different lengths. To allow a different number of equations than states use kwarg check_length=false."))
+            end
+        elseif length(dvs) != length(u0)
+            throw(ArgumentError("States ($(length(dvs))) and initial conditions ($(length(u0))) are of different lengths."))
+        end
+    elseif check_length && (length(eqs) != length(dvs))
+        throw(ArgumentError("Equations ($(length(eqs))) and states ($(length(dvs))) are of different lengths. To allow these to differ use kwarg check_length=false."))
+    end
+    return nothing
+end
+
+###
+### Connectors
+###
+
+function with_connection_type(expr)
+    @assert expr isa Expr && (expr.head == :function || (expr.head == :(=) &&
+                                       expr.args[1] isa Expr &&
+                                       expr.args[1].head == :call))
+
+    sig = expr.args[1]
+    body = expr.args[2]
+
+    fname = sig.args[1]
+    args = sig.args[2:end]
+
+    quote
+        struct $fname
+            $(gensym()) -> 1 # this removes the default constructor
+        end
+        function $fname($(args...))
+            function f()
+                $body
+            end
+            res = f()
+            $isdefined(res, :connection_type) ? $Setfield.@set!(res.connection_type = $fname) : res
+        end
+    end
+end
+
+macro connector(expr)
+    esc(with_connection_type(expr))
+end
+
+promote_connect_rule(::Type{T}, ::Type{S}) where {T, S} = Union{}
+promote_connect_rule(::Type{T}, ::Type{T}) where {T} = T
+promote_connect_type(t1::Type, t2::Type, ts::Type...) = promote_connect_type(promote_connect_rule(t1, t2), ts...)
+@inline function promote_connect_type(::Type{T}, ::Type{S}) where {T,S}
+    promote_connect_result(
+        T,
+        S,
+        promote_connect_rule(T,S),
+        promote_connect_rule(S,T)
+    )
+end
+
+promote_connect_result(::Type, ::Type, ::Type{T}, ::Type{Union{}}) where {T} = T
+promote_connect_result(::Type, ::Type, ::Type{Union{}}, ::Type{S}) where {S} = S
+promote_connect_result(::Type, ::Type, ::Type{T}, ::Type{T}) where {T} = T
+function promote_connect_result(::Type{T}, ::Type{S}, ::Type{P1}, ::Type{P2}) where {T,S,P1,P2}
+    throw(ArgumentError("connection promotion for $T and $S resulted in $P1 and $P2. " *
+                        "Define promotion only in one direction."))
+end
+
+throw_connector_promotion(T, S) = throw(ArgumentError("Don't know how to connect systems of type $S and $T"))
+promote_connect_result(::Type{T},::Type{S},::Type{Union{}},::Type{Union{}}) where {T,S} = throw_connector_promotion(T,S)
+
+promote_connect_type(::Type{T}, ::Type{T}) where {T} = T
+function promote_connect_type(T, S)
+    error("Don't know how to connect systems of type $S and $T")
+end
+
+function connect(syss...)
+    connect(promote_connect_type(map(get_connection_type, syss)...), syss...)
+end

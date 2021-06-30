@@ -52,15 +52,15 @@ struct ControlSystem <: AbstractControlSystem
     eqs::Vector{Equation}
     """Independent variable."""
     iv::Sym
-    """Dependent (state) variables."""
+    """Dependent (state) variables. Must not contain the independent variable."""
     states::Vector
     """Control variables."""
     controls::Vector
-    """Parameter variables."""
+    """Parameter variables. Must not contain the independent variable."""
     ps::Vector
     observed::Vector{Equation}
     """
-    Name: the name of the system
+    Name: the name of the system. These are required to have unique names.
     """
     name::Symbol
     """
@@ -72,6 +72,13 @@ struct ControlSystem <: AbstractControlSystem
     parameters are not supplied in `ODEProblem`.
     """
     defaults::Dict
+    function ControlSystem(loss, deqs, iv, dvs, controls, ps, observed, name, systems, defaults)
+        check_variables(dvs, iv)
+        check_parameters(ps, iv)
+        check_equations(deqs, iv)
+        check_equations(observed, iv)
+        new(loss, deqs, iv, dvs, controls, ps, observed, name, systems, defaults)
+    end
 end
 
 function ControlSystem(loss, deqs::AbstractVector{<:Equation}, iv, dvs, controls, ps;
@@ -83,6 +90,10 @@ function ControlSystem(loss, deqs::AbstractVector{<:Equation}, iv, dvs, controls
                        name=gensym(:ControlSystem))
     if !(isempty(default_u0) && isempty(default_p))
         Base.depwarn("`default_u0` and `default_p` are deprecated. Use `defaults` instead.", :ControlSystem, force=true)
+    end
+    sysnames = nameof.(systems)
+    if length(unique(sysnames)) != length(sysnames)
+        throw(ArgumentError("System names must be unique."))
     end
     iv′ = value(iv)
     dvs′ = value.(dvs)

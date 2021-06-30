@@ -35,11 +35,12 @@ import SymbolicUtils: istree, arguments, operation, similarterm, promote_symtype
 using SymbolicUtils.Code
 import SymbolicUtils.Code: toexpr
 import SymbolicUtils.Rewriters: Chain, Postwalk, Prewalk, Fixpoint
+import JuliaFormatter
 
 using Reexport
 @reexport using Symbolics
 export @derivatives
-using Symbolics: _parse_vars, value, makesym, @derivatives, get_variables,
+using Symbolics: _parse_vars, value, @derivatives, get_variables,
                  exprs_occur_in, solve_for, build_expr
 import Symbolics: rename, get_variables!, _solve, hessian_sparsity,
                   jacobian_sparsity, islinear, _iszero, _isone,
@@ -48,7 +49,7 @@ import Symbolics: rename, get_variables!, _solve, hessian_sparsity,
                   ParallelForm, SerialForm, MultithreadedForm, build_function,
                   unflatten_long_ops, rhss, lhss, prettify_expr, gradient,
                   jacobian, hessian, derivative, sparsejacobian, sparsehessian,
-                  substituter
+                  substituter, scalarize
 
 import DiffEqBase: @add_kwonly
 
@@ -129,6 +130,8 @@ include("systems/pde/pdesystem.jl")
 include("systems/reaction/reactionsystem.jl")
 include("systems/dependency_graphs.jl")
 
+include("systems/discrete_system/discrete_system.jl")
+
 include("systems/systemstructure.jl")
 using .SystemStructures
 
@@ -136,7 +139,8 @@ include("systems/alias_elimination.jl")
 include("structural_transformation/StructuralTransformations.jl")
 @reexport using .StructuralTransformations
 
-export ODESystem, ODEFunction, ODEFunctionExpr, ODEProblemExpr
+export ODESystem, ODEFunction, ODEFunctionExpr, ODEProblemExpr, convert_system
+export DAEFunctionExpr, DAEProblemExpr
 export SDESystem, SDEFunction, SDEFunctionExpr, SDESystemExpr
 export SystemStructure
 export JumpSystem
@@ -148,17 +152,18 @@ export SteadyStateProblem, SteadyStateProblemExpr
 export JumpProblem, DiscreteProblem
 export NonlinearSystem, OptimizationSystem
 export ControlSystem
-export alias_elimination, flatten
+export alias_elimination, flatten, connect, @connector
 export ode_order_lowering, liouville_transform
 export runge_kutta_discretize
 export PDESystem
 export Reaction, ReactionSystem, ismassaction, oderatelaw, jumpratelaw
 export Differential, expand_derivatives, @derivatives
-export IntervalDomain, ProductDomain, ⊗, CircleDomain
 export Equation, ConstrainedEquation
 export Term, Sym
+export SymScope, LocalScope, ParentScope, GlobalScope
 export independent_variable, states, parameters, equations, controls, observed, structure
 export structural_simplify
+export DiscreteSystem, DiscreteProblem
 
 export calculate_jacobian, generate_jacobian, generate_function
 export calculate_tgrad, generate_tgrad

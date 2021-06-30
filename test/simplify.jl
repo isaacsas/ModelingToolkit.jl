@@ -11,7 +11,7 @@ null_op = 0*t
 one_op = 1*t
 @test isequal(simplify(one_op), t)
 
-identity_op = Num(Term(identity,[x.val]))
+identity_op = Num(Term(identity,[value(x)]))
 @test isequal(simplify(identity_op), x)
 
 minus_op = -x
@@ -20,7 +20,7 @@ simplify(minus_op)
 
 @variables x
 
-@test toexpr(expand_derivatives(Differential(x)((x-2)^2))) == :($(*)(2, $(+)(-2, x)))
+@test toexpr(expand_derivatives(Differential(x)((x-2)^2))) == :($(+)(-4, $(*)(2, x)))
 @test toexpr(expand_derivatives(Differential(x)((x-2)^3))) == :($(*)(3, $(^)($(+)(-2, x), 2)))
 @test toexpr(simplify(x+2+3)) == :($(+)(5, x))
 
@@ -41,8 +41,8 @@ using SymbolicUtils: substitute
 # back and forth substitution does not work for parameters with dependencies
 term = value(a)
 term2 = substitute(term, a=>b)
-@test term2 isa Term{ModelingToolkit.Parameter{Real}}
+@test ModelingToolkit.isparameter(term2)
 @test isequal(term2, b)
 term3 = substitute(term2, b=>a)
-@test term3 isa Term{ModelingToolkit.Parameter{Real}}
+@test ModelingToolkit.isparameter(term3)
 @test isequal(term3, a)

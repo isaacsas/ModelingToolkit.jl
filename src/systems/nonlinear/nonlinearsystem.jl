@@ -27,7 +27,12 @@ struct NonlinearSystem <: AbstractSystem
     ps::Vector
     observed::Vector{Equation}
     """
-    Name: the name of the system
+    Jacobian matrix. Note: this field will not be defined until
+    [`calculate_jacobian`](@ref) is called on the system.
+    """
+    jac::RefValue{Any}
+    """
+    Name: the name of the system. These are required to have unique names.
     """
     name::Symbol
     """
@@ -43,25 +48,40 @@ struct NonlinearSystem <: AbstractSystem
     structure: structural information of the system
     """
     structure::Any
-    reduced_states::Any
+    """
+    type: type of the system
+    """
+    connection_type::Any
 end
 
 function NonlinearSystem(eqs, states, ps;
-                         observed = [],
-                         name = gensym(:NonlinearSystem),
+                         observed=[],
+                         name=gensym(:NonlinearSystem),
                          default_u0=Dict(),
                          default_p=Dict(),
                          defaults=_merge(Dict(default_u0), Dict(default_p)),
-                         systems = NonlinearSystem[])
+                         systems=NonlinearSystem[],
+                         connection_type=nothing,
+                         )
     if !(isempty(default_u0) && isempty(default_p))
         Base.depwarn("`default_u0` and `default_p` are deprecated. Use `defaults` instead.", :NonlinearSystem, force=true)
     end
+    sysnames = nameof.(systems)
+    if length(unique(sysnames)) != length(sysnames)
+        throw(ArgumentError("System names must be unique."))
+    end
+    jac = RefValue{Any}(Matrix{Num}(undef, 0, 0))
     defaults = todict(defaults)
     defaults = Dict(value(k) => value(v) for (k, v) in pairs(defaults))
-    NonlinearSystem(eqs, value.(states), value.(ps), observed, name, systems, defaults, nothing, [])
+    NonlinearSystem(eqs, value.(states), value.(ps), observed, jac, name, systems, defaults, nothing, connection_type)
 end
 
-function calculate_jacobian(sys::NonlinearSystem;sparse=false,simplify=false)
+function calculate_jacobian(sys::NonlinearSystem; sparse=false, simplify=false)
+    cache = get_jac(sys)[]
+    if cache isa Tuple && cache[2] == (sparse, simplify)
+        return cache[1]
+    end
+
     rhs = [eq.rhs for eq ∈ equations(sys)]
     vals = [dv for dv in states(sys)]
     if sparse
@@ -69,6 +89,7 @@ function calculate_jacobian(sys::NonlinearSystem;sparse=false,simplify=false)
     else
         jac = jacobian(rhs, vals, simplify=simplify)
     end
+    get_jac(sys)[] = jac, (sparse, simplify)
     return jac
 end
 
@@ -82,18 +103,11 @@ end
 function generate_function(sys::NonlinearSystem, dvs = states(sys), ps = parameters(sys); kwargs...)
     #obsvars = map(eq->eq.lhs, observed(sys))
     #fulldvs = [dvs; obsvars]
-    fulldvs = dvs
-    fulldvs′ = makesym.(value.(fulldvs))
 
-    sub = Dict(fulldvs .=> fulldvs′)
-    # substitute x(t) by just x
-    rhss = [substitute(deq.rhs, sub) for deq ∈ equations(sys)]
-    #obss = [makesym(value(eq.lhs)) ~ substitute(eq.rhs, sub) for eq ∈ observed(sys)]
+    rhss = [deq.rhs for deq ∈ equations(sys)]
     #rhss = Let(obss, rhss)
 
-    dvs′ = fulldvs′[1:length(dvs)]
-    ps′ = makesym.(value.(ps), states=())
-    return build_function(rhss, dvs′, ps′;
+    return build_function(rhss, value.(dvs), value.(ps);
                           conv = AbstractSysToExpr(sys), kwargs...)
 end
 
@@ -143,10 +157,19 @@ function DiffEqBase.NonlinearFunction{iip}(sys::NonlinearSystem, dvs = states(sy
         _jac = nothing
     end
 
+    observedfun = let sys = sys, dict = Dict()
+        function generated_observed(obsvar, u, p)
+            obs = get!(dict, value(obsvar)) do
+                build_explicit_observed_function(sys, obsvar)
+            end
+            obs(u, p)
+        end
+    end
+
     NonlinearFunction{iip}(f,
                      jac = _jac === nothing ? nothing : _jac,
-                     jac_prototype = sparse ? similar(sys.jac[],Float64) : nothing,
-                     syms = Symbol.(states(sys)))
+                     jac_prototype = sparse ? similar(calculate_jacobian(sys, sparse=sparse),Float64) : nothing,
+                     syms = Symbol.(states(sys)), observed = observedfun)
 end
 
 """
@@ -205,15 +228,14 @@ function process_NonlinearProblem(constructor, sys::NonlinearSystem,u0map,paramm
                            linenumbers = true, parallel=SerialForm(),
                            eval_expression = true,
                            kwargs...)
+    eqs = equations(sys)
     dvs = states(sys)
     ps = parameters(sys)
     defs = defaults(sys)
     u0 = varmap_to_vars(u0map,dvs; defaults=defs)
     p = varmap_to_vars(parammap,ps; defaults=defs)
 
-    if u0 !== nothing
-        length(dvs) == length(u0) || throw(ArgumentError("States ($(length(dvs))) and initial conditions ($(length(u0))) are of different lengths."))
-    end
+    check_eqs_u0(eqs, dvs, u0; kwargs...)
 
     f = constructor(sys,dvs,ps,u0;jac=jac,checkbounds=checkbounds,
                     linenumbers=linenumbers,parallel=parallel,simplify=simplify,
@@ -294,4 +316,11 @@ function flatten(sys::NonlinearSystem)
                                name=nameof(sys),
                               )
     end
+end
+
+function Base.:(==)(sys1::NonlinearSystem, sys2::NonlinearSystem)
+    _eq_unordered(get_eqs(sys1), get_eqs(sys2)) &&
+    _eq_unordered(get_states(sys1), get_states(sys2)) &&
+    _eq_unordered(get_ps(sys1), get_ps(sys2)) &&
+    all(s1 == s2 for (s1, s2) in zip(get_systems(sys1), get_systems(sys2)))
 end

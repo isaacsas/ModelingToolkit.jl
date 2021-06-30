@@ -21,7 +21,8 @@ end
 eqs = [0 ~ σ*(y-x),
        0 ~ x*(ρ-z)-y,
        0 ~ x*y - β*z]
-ns = NonlinearSystem(eqs, [x,y,z], [σ,ρ,β])
+ns = NonlinearSystem(eqs, [x,y,z], [σ,ρ,β], defaults = Dict(x => 2))
+@test eval(toexpr(ns)) == ns
 test_nlsys_inference("standard", ns, (x, y, z), (σ, ρ, β))
 @test begin
     f = eval(generate_function(ns, [x,y,z], [σ,ρ,β])[2])
@@ -87,9 +88,50 @@ eqs1 = [
 
 lorenz = name -> NonlinearSystem(eqs1, [x,y,z,u,F], [σ,ρ,β], name=name)
 lorenz1 = lorenz(:lorenz1)
+@test_throws ArgumentError NonlinearProblem(lorenz1, zeros(5))
 lorenz2 = lorenz(:lorenz2)
 connected = NonlinearSystem([s ~ a + lorenz1.x
                              lorenz2.y ~ s
                              lorenz1.F ~ lorenz2.u
                              lorenz2.F ~ lorenz1.u], [s, a], [], systems=[lorenz1,lorenz2])
 @test_nowarn alias_elimination(connected)
+
+# system promotion
+using OrdinaryDiffEq
+@variables t
+D = Differential(t)
+@named subsys = convert_system(ODESystem, lorenz1, t)
+@named sys = ODESystem([D(subsys.x) ~ subsys.x + subsys.x], t, systems=[subsys])
+sys = structural_simplify(sys)
+prob = ODEProblem(sys, [subsys.x => 1, subsys.z => 2.0], (0, 1.0), [subsys.σ=>1,subsys.ρ=>2,subsys.β=>3])
+sol = solve(prob, Rodas5())
+@test sol[subsys.x] + sol[subsys.y] - sol[subsys.z] ≈ sol[subsys.u]
+@test_throws ArgumentError convert_system(ODESystem, sys, t)
+
+@parameters t σ ρ β
+@variables x y z
+
+# Define a nonlinear system
+eqs = [0 ~ σ*(y-x),
+       0 ~ x*(ρ-z)-y,
+       0 ~ x*y - β*z]
+ns = NonlinearSystem(eqs, [x,y,z], [σ,ρ,β])
+np = NonlinearProblem(ns, [0,0,0], [1,2,3], jac=true, sparse=true)
+@test calculate_jacobian(ns, sparse=true) isa SparseMatrixCSC
+
+# issue #819
+@testset "Combined system name collisions" begin
+       function makesys(name)
+           @parameters a
+           @variables x f
+
+           NonlinearSystem([0 ~ -a * x + f], [x,f], [a], name = name)
+       end
+
+       function issue819()
+           sys1 = makesys(:sys1)
+           sys2 = makesys(:sys1)
+           @test_throws ArgumentError NonlinearSystem([sys2.f ~ sys1.x, sys1.f ~ 0], [], [], systems = [sys1, sys2])
+       end
+       issue819()
+end

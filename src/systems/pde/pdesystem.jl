@@ -28,8 +28,8 @@ bcs = [u(t,0) ~ 0.,# for all t > 0
        Dt(u(0,x)) ~ 0. ] #for all  0 < x < 1]
 
 # Space and time domains
-domains = [t ∈ IntervalDomain(0.0,1.0),
-           x ∈ IntervalDomain(0.0,1.0)]
+domains = [t ∈ (0.0,1.0),
+           x ∈ (0.0,1.0)]
 
 pde_system = PDESystem(eq,bcs,domains,[t,x],[u])
 ```
@@ -52,8 +52,16 @@ struct PDESystem <: ModelingToolkit.AbstractSystem
     parameters are not supplied in `ODEProblem`.
     """
     defaults::Dict
-    @add_kwonly function PDESystem(eqs, bcs, domain, indvars, depvars, ps = SciMLBase.NullParameters(), defaults = Dict())
-        new(eqs, bcs, domain, indvars, depvars, ps, defaults)
+    """
+    type: type of the system
+    """
+    connection_type::Any
+    @add_kwonly function PDESystem(eqs, bcs, domain, indvars, depvars,
+                                   ps=SciMLBase.NullParameters();
+                                   defaults=Dict(),
+                                   connection_type=nothing,
+                                  )
+        new(eqs, bcs, domain, indvars, depvars, ps, defaults, connection_type)
     end
 end
 

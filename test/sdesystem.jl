@@ -333,14 +333,14 @@ fdif!(du,u0,p,t)
 sys2 = stochastic_integral_transform(sys,-1//2)
 fdrift = eval(generate_function(sys2)[1])
 fdif = eval(generate_diffusion_function(sys2)[1])
-@test fdrift(u0,p,t) == [p[1]*u0[1] - 1//2*(p[2]^2*u0[1]+p[3]^2*u0[1]), p[1]*u0[2] - 1//2*(p[2]*p[4]*u0[1]+p[5]^2*u0[2])]
+@test fdrift(u0,p,t) ≈ [p[1]*u0[1] - 1//2*(p[2]^2*u0[1]+p[3]^2*u0[1]), p[1]*u0[2] - 1//2*(p[2]*p[4]*u0[1]+p[5]^2*u0[2])]
 @test fdif(u0,p,t) == [p[2]*u0[1]   p[3]*u0[1]
                       p[4]*u0[1]     p[5]*u0[2] ]
 fdrift! = eval(generate_function(sys2)[2])
 fdif! = eval(generate_diffusion_function(sys2)[2])
 du = similar(u0)
 fdrift!(du,u0,p,t)
-@test  du == [p[1]*u0[1] - 1//2*(p[2]^2*u0[1]+p[3]^2*u0[1]), p[1]*u0[2] - 1//2*(p[2]*p[4]*u0[1]+p[5]^2*u0[2])]
+@test  du ≈ [p[1]*u0[1] - 1//2*(p[2]^2*u0[1]+p[3]^2*u0[1]), p[1]*u0[2] - 1//2*(p[2]*p[4]*u0[1]+p[5]^2*u0[2])]
 du = similar(u0, size(prob.noise_rate_prototype))
 fdif!(du,u0,p,t)
 @test du == [p[2]*u0[1]   p[3]*u0[1]
@@ -350,14 +350,14 @@ fdif!(du,u0,p,t)
 sys2 = stochastic_integral_transform(sys,1//2)
 fdrift = eval(generate_function(sys2)[1])
 fdif = eval(generate_diffusion_function(sys2)[1])
-@test fdrift(u0,p,t) == [p[1]*u0[1] + 1//2*(p[2]^2*u0[1]+p[3]^2*u0[1]), p[1]*u0[2] + 1//2*(p[2]*p[4]*u0[1]+p[5]^2*u0[2])]
+@test fdrift(u0,p,t) ≈ [p[1]*u0[1] + 1//2*(p[2]^2*u0[1]+p[3]^2*u0[1]), p[1]*u0[2] + 1//2*(p[2]*p[4]*u0[1]+p[5]^2*u0[2])]
 @test fdif(u0,p,t) == [p[2]*u0[1]   p[3]*u0[1]
                       p[4]*u0[1]     p[5]*u0[2] ]
 fdrift! = eval(generate_function(sys2)[2])
 fdif! = eval(generate_diffusion_function(sys2)[2])
 du = similar(u0)
 fdrift!(du,u0,p,t)
-@test  du == [p[1]*u0[1] + 1//2*(p[2]^2*u0[1]+p[3]^2*u0[1]), p[1]*u0[2] + 1//2*(p[2]*p[4]*u0[1]+p[5]^2*u0[2])]
+@test  du ≈ [p[1]*u0[1] + 1//2*(p[2]^2*u0[1]+p[3]^2*u0[1]), p[1]*u0[2] + 1//2*(p[2]*p[4]*u0[1]+p[5]^2*u0[2])]
 du = similar(u0, size(prob.noise_rate_prototype))
 fdif!(du,u0,p,t)
 @test du == [p[2]*u0[1]   p[3]*u0[1]
@@ -432,3 +432,14 @@ du = similar(u0, size(prob.noise_rate_prototype))
 fdif!(du,u0,p,t)
 @test du == [ cos(p[1])*sin(u0[1])   cos(p[1])*cos(u0[1])   -sin(p[1])*sin(u0[2])   -sin(p[1])*cos(u0[2])
               sin(p[1])*sin(u0[1])   sin(p[1])*cos(u0[1])    cos(p[1])*sin(u0[2])    cos(p[1])*cos(u0[2])]
+
+# issue #819
+@testset "Combined system name collisions" begin
+    @variables t
+    eqs_short = [D(x) ~ σ*(y-x),
+                D(y) ~ x*(ρ-z)-y,
+                ]
+    sys1 = SDESystem(eqs_short, noiseeqs, t, [x, y, z], [σ, ρ, β], name = :sys1)
+    sys2 = SDESystem(eqs_short, noiseeqs, t, [x, y, z], [σ, ρ, β], name = :sys1)
+    @test_throws ArgumentError SDESystem([sys2.y ~ sys1.z], t, [], [], [], systems = [sys1, sys2])
+end

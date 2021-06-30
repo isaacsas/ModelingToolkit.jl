@@ -16,9 +16,16 @@ function modelingtoolkitize(prob::DiffEqBase.ODEProblem)
 
     has_p = !(p isa Union{DiffEqBase.NullParameters,Nothing})
 
-    var(x, i) = Num(Sym{FnType{Tuple{symtype(t)}, Real}}(nameof(Variable(x, i))))
-    vars = ArrayInterface.restructure(prob.u0,[var(:x, i)(ModelingToolkit.value(t)) for i in eachindex(prob.u0)])
-    params = has_p ? reshape([Num(Sym{Real}(nameof(Variable(:α, i)))) for i in eachindex(p)],size(p)) : []
+    _vars = define_vars(prob.u0,t)
+
+    vars = prob.u0 isa Number ? _vars : ArrayInterface.restructure(prob.u0,_vars)
+    params = if has_p
+        _params = define_params(p)
+        p isa Number ? _params[1] : ArrayInterface.restructure(p,_params)
+    else
+        []
+    end
+
     var_set = Set(vars)
 
     D = Differential(t)
@@ -39,7 +46,7 @@ function modelingtoolkitize(prob::DiffEqBase.ODEProblem)
     end
 
     if DiffEqBase.isinplace(prob)
-        rhs = similar(vars, Num)
+        rhs = ArrayInterface.restructure(prob.u0,similar(vars, Num))
         prob.f(rhs, vars, params, t)
     else
         rhs = prob.f(vars, params, t)
@@ -64,6 +71,24 @@ function modelingtoolkitize(prob::DiffEqBase.ODEProblem)
     de
 end
 
+_defvaridx(x, i, t) = Num(Sym{FnType{Tuple{symtype(t)}, Real}}(nameof(Variable(x, i))))
+_defvar(x, t) = Num(Sym{FnType{Tuple{symtype(t)}, Real}}(nameof(Variable(x))))
+
+function define_vars(u,t)
+    _vars = [_defvaridx(:x, i, t)(ModelingToolkit.value(t)) for i in eachindex(u)]
+end
+
+function define_vars(u::Union{SLArray,LArray},t)
+    _vars = [_defvar(x, t)(ModelingToolkit.value(t)) for x in LabelledArrays.symnames(typeof(u))]
+end
+
+function define_params(p)
+    [Num(toparam(Sym{Real}(nameof(Variable(:α, i))))) for i in eachindex(p)]
+end
+
+function define_params(p::Union{SLArray,LArray})
+    [Num(toparam(Sym{Real}(nameof(Variable(x))))) for x in LabelledArrays.symnames(typeof(p))]
+end
 
 
 """

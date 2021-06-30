@@ -72,26 +72,86 @@ function states_to_sym(states::Set)
 end
 states_to_sym(states) = states_to_sym(Set(states))
 
-"""
-    toparam(s::Sym) -> Sym{<:Parameter}
-
-Maps the variable to a paramter.
-"""
-toparam(s::Sym) = Sym{Parameter{symtype(s)}}(s.name)
-toparam(s::Sym{<:Parameter}) = s
-
-"""
-    tovar(s::Sym) -> Sym{Real}
-    tovar(s::Sym{<:Parameter}) -> Sym{Real}
-
-Maps the variable to a state.
-"""
-tovar(s::Sym{<:Parameter}) = Sym{symtype(s)}(s.name)
-tovar(s::Sym) = s
-
 function todict(d)
     eltype(d) <: Pair || throw(ArgumentError("The variable-value mapping must be a Dict."))
     d isa Dict ? d : Dict(d)
 end
 
 _merge(d1, d2) = merge(todict(d1), todict(d2))
+
+function indepvar2depvar(s::Sym, args...)
+    T = FnType{NTuple{length(args)}, symtype(s)}
+    ns = Sym{T}(nameof(s))(args...)
+    @set! ns.metadata = s.metadata
+end
+
+function _readable_code(ex)
+    ex isa Expr || return ex
+    if ex.head === :call
+        f, args = ex.args[1], ex.args[2:end]
+        if f isa Function && (nf = nameof(f); Base.isoperator(nf))
+            expr = Expr(:call, nf)
+            for a in args
+                push!(expr.args, _readable_code(a))
+            end
+            return expr
+        end
+    end
+    expr = Expr(ex.head)
+    for a in ex.args
+        push!(expr.args, _readable_code(a))
+    end
+    expr
+end
+readable_code(expr) = JuliaFormatter.format_text(string(Base.remove_linenums!(_readable_code(expr))))
+
+function check_parameters(ps, iv)
+    for p in ps
+        isequal(iv, p) && throw(ArgumentError("Independent variable $iv not allowed in parameters."))
+    end
+end
+
+function check_variables(dvs, iv)
+    for dv in dvs
+        isequal(iv, dv) && throw(ArgumentError("Independent variable $iv not allowed in dependent variables."))
+        isequal(iv, iv_from_nested_derivative(dv)) || throw(ArgumentError("Variable $dv is not a function of independent variable $iv."))
+    end
+end 
+
+"Get all the independent variables with respect to which differentials are taken."
+function collect_differentials(eqs)
+    vars = Set()
+    ivs = Set()
+    for eq in eqs
+        vars!(vars, eq)
+        for v in vars
+            isdifferential(v) || continue
+            collect_ivs_from_nested_differential!(ivs, v)  
+        end
+        empty!(vars)
+    end
+    return ivs
+end
+
+"Assert that equations are well-formed when building ODE."
+function check_equations(eqs, iv)
+    ivs = collect_differentials(eqs)
+    display = collect(ivs)
+    length(ivs) <= 1 || throw(ArgumentError("Differential w.r.t. multiple variables $display are not allowed."))
+    if length(ivs) == 1
+        single_iv = pop!(ivs)
+        isequal(single_iv, iv) || throw(ArgumentError("Differential w.r.t. variable ($single_iv) other than the independent variable ($iv) are not allowed."))
+    end
+end
+"Get all the independent variables with respect to which differentials are taken."
+function collect_ivs_from_nested_differential!(ivs, x::Term)
+    op = operation(x)
+    if op isa Differential
+        push!(ivs, op.x)
+        collect_ivs_from_nested_differential!(ivs, arguments(x)[1])
+    end
+end
+
+iv_from_nested_derivative(x::Term) = operation(x) isa Differential ? iv_from_nested_derivative(arguments(x)[1]) : arguments(x)[1]
+iv_from_nested_derivative(x::Sym) = x
+iv_from_nested_derivative(x) = missing

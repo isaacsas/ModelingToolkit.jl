@@ -1,5 +1,5 @@
 using ModelingToolkit, StaticArrays, LinearAlgebra
-using OrdinaryDiffEq
+using OrdinaryDiffEq, Sundials
 using DiffEqBase, SparseArrays
 using StaticArrays
 using Test
@@ -17,8 +17,8 @@ eqs = [D(x) ~ σ*(y-x),
        D(z) ~ x*y - β*z]
 
 ModelingToolkit.toexpr.(eqs)[1]
-:(derivative(x(t), t) = σ * (y(t) - x(t))).args
-de = ODESystem(eqs)
+de = ODESystem(eqs; defaults=Dict(x => 1))
+@test eval(toexpr(de)) == de
 
 generate_function(de)
 
@@ -225,12 +225,27 @@ for p in [prob1, prob14]
 end
 prob2 = ODEProblem(sys,u0,tspan,p,jac=true)
 prob3 = ODEProblem(sys,u0,tspan,p,jac=true,sparse=true)
+@test prob3.f.sparsity isa SparseMatrixCSC
+@test_throws ArgumentError ODEProblem(sys,zeros(5),tspan,p)
 for (prob, atol) in [(prob1, 1e-12), (prob2, 1e-12), (prob3, 1e-12)]
     local sol
     sol = solve(prob, Rodas5())
     @test all(x->≈(sum(x), 1.0, atol=atol), sol.u)
 end
-@test_throws ArgumentError ODEProblem(sys,zeros(5),tspan,p)
+
+du0 = [
+       D(y₁) => -0.04
+       D(y₂) => 0.04
+       D(y₃) => 0.0
+      ]
+prob4 = DAEProblem(sys, du0, u0, tspan, p2)
+prob5 = eval(DAEProblemExpr(sys, du0, u0, tspan, p2))
+for prob in [prob4, prob5]
+    local sol
+    @test prob.differential_vars == [true, true, false]
+    sol = solve(prob, IDA())
+    @test all(x->≈(sum(x), 1.0, atol=1e-12), sol.u)
+end
 
 @parameters t σ β
 @variables x(t) y(t) z(t)
@@ -288,7 +303,7 @@ ode = ODESystem(eq)
         @variables x(t) f(t)
         D = Differential(t)
 
-        ODESystem([D(x) ~ -a*x + f], name=name)
+        ODESystem([D(x) ~ -a*x + f], name = name)
     end
 
     function issue808()
@@ -297,11 +312,33 @@ ode = ODESystem(eq)
 
         @parameters t
         D = Differential(t)
-        @test_throws ArgumentError ODESystem([sys2.f ~ sys1.x, D(sys1.f) ~ 0], t, systems=[sys1, sys2])
+        @test_throws ArgumentError ODESystem([sys2.f ~ sys1.x, D(sys1.f) ~ 0], t, systems = [sys1, sys2])
     end
     issue808()
 
 end
+
+#Issue 998
+@parameters t 
+pars = []
+vars = @variables((u1,))
+der = Differential(t)
+eqs = [
+  der(u1) ~ 1,
+]
+@test_throws ArgumentError ODESystem(eqs, t, vars, pars)
+
+#Issue 1063/998
+pars = [t]
+vars = @variables((u1(t),))
+@test_throws ArgumentError ODESystem(eqs, t, vars, pars)
+
+@parameters w
+der = Differential(w)
+eqs = [
+  der(u1) ~ t,
+]
+@test_throws ArgumentError ModelingToolkit.ODESystem(eqs, t, vars, pars)
 
 @variables x(t)
 D = Differential(t)
@@ -315,3 +352,13 @@ sys = ode_order_lowering(sys)
 prob = ODEProblem(sys, [], tspan)
 sol = solve(prob, Tsit5())
 @test sum(abs, sol[end]) < 1
+
+
+# check_eqs_u0 kwarg test
+@parameters t
+@variables x1(t) x2(t)
+D =Differential(t)
+eqs = [D(x1) ~ -x1]
+sys = ODESystem(eqs,t,[x1,x2],[])
+@test_throws ArgumentError ODEProblem(sys, [1.0,1.0], (0.0,1.0))
+prob = ODEProblem(sys, [1.0,1.0], (0.0,1.0), check_length=false)
