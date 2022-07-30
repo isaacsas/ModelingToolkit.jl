@@ -1,5 +1,6 @@
 using SafeTestsets, Test
 
+@safetestset "AliasGraph Test" begin include("alias.jl") end
 @safetestset "Linear Algebra Test" begin include("linalg.jl") end
 @safetestset "AbstractSystem Test" begin include("abstractsystem.jl") end
 @safetestset "Variable scope tests" begin include("variable_scope.jl") end
@@ -8,6 +9,7 @@ using SafeTestsets, Test
 @safetestset "Simplify Test" begin include("simplify.jl") end
 @safetestset "Direct Usage Test" begin include("direct.jl") end
 @safetestset "System Linearity Test" begin include("linearity.jl") end
+@safetestset "Linearization tests" begin include("linearize.jl") end
 @safetestset "Input Output Test" begin include("input_output_handling.jl") end
 @safetestset "DiscreteSystem Test" begin include("discretesystem.jl") end
 @safetestset "ODESystem Test" begin include("odesystem.jl") end
@@ -43,6 +45,7 @@ println("Last test requires gcc available in the path!")
 @safetestset "state_selection" begin include("state_selection.jl") end
 @safetestset "Modelingtoolkitize Test" begin include("modelingtoolkitize.jl") end
 @safetestset "OptimizationSystem Test" begin include("optimizationsystem.jl") end
+@safetestset "FuncAffect Test" begin include("funcaffect.jl") end
 
 # Reference tests go Last
 @safetestset "Latexify recipes Test" begin include("latexify.jl") end

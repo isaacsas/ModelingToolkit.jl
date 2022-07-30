@@ -35,7 +35,7 @@ d = FakeNormal()
 ## System interface
 @parameters t
 Dₜ = Differential(t)
-@variables x(t)=0 u(t)=0 [input = true] y(t)=0 [output = true]
+@variables x(t)=0 [bounds = (-10, 10)] u(t)=0 [input = true] y(t)=0 [output = true]
 @parameters T [tunable = true, bounds = (0, Inf)]
 @parameters k [tunable = true, bounds = (0, Inf)]
 @parameters k2
@@ -57,9 +57,28 @@ lb, ub = getbounds(p)
 b = getbounds(sys)
 @test b[T] == (0, Inf)
 
+b = getbounds(sys, states(sys))
+@test b[x] == (-10, 10)
+
 p = tunable_parameters(sys, default = true)
 sp = Set(p)
 @test k ∈ sp
 @test T ∈ sp
 @test k2 ∈ sp
 @test length(p) == 3
+
+## Descriptions
+@variables u [description = "This is my input"]
+@test getdescription(u) == "This is my input"
+@test hasdescription(u)
+
+@variables u
+@test getdescription(u) == ""
+@test !hasdescription(u)
+
+@parameters t
+@variables u(t) [description = "A short description of u"]
+@parameters p [description = "A description of p"]
+@named sys = ODESystem([u ~ p], t)
+
+@test_nowarn show(stdout, "text/plain", sys)
