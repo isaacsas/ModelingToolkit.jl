@@ -1512,13 +1512,22 @@ function SciMLBase.detect_cycles(sys::AbstractSystem, varmap::Dict{Any, Any}, va
 end
 
 function process_kwargs(sys::System; expression = Val{false}, callback = nothing,
-        eval_expression = false, eval_module = @__MODULE__, kwargs...)
+        eval_expression = false, eval_module = @__MODULE__, op = nothing, kwargs...)
     kwargs = filter_kwargs(kwargs)
     kwargs1 = (;)
 
     if is_time_dependent(sys)
         if expression == Val{false}
-            cbs = process_events(sys; callback, eval_expression, eval_module, kwargs...)
+            # Extract parameter map from operating point for callback parameter resolution
+            parameter_map = if op !== nothing && op isa AbstractDict
+                # Filter to only parameters that exist in the system
+                sys_params = Set(unwrap.(parameters(sys)))
+                Dict(k => v for (k, v) in op if unwrap(k) in sys_params)
+            else
+                Dict()
+            end
+            
+            cbs = process_events(sys; callback, parameter_map, eval_expression, eval_module, kwargs...)
             if cbs !== nothing
                 kwargs1 = merge(kwargs1, (callback = cbs,))
             end

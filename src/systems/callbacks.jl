@@ -418,7 +418,14 @@ function SymbolicDiscreteCallback(
         condition::Union{Symbolic{Bool}, Number, Vector{<:Number}}, affect = nothing;
         initialize = nothing, finalize = nothing,
         reinitializealg = nothing, kwargs...)
-    c = is_timed_condition(condition) ? condition : value(scalarize(condition))
+    # Handle symbolic timed conditions by preserving them as-is for later resolution
+    c = if has_symbolic_timed_condition(condition)
+        condition
+    elseif is_timed_condition(condition)
+        condition
+    else
+        value(scalarize(condition))
+    end
 
     if isnothing(reinitializealg)
         if any(a -> a isa ImperativeAffect,
@@ -462,6 +469,28 @@ function is_timed_condition(condition::T) where {T}
     else
         false
     end
+end
+
+function is_symbolic_timed_condition(condition::T) where {T}
+    if T === Num
+        # Check if it's a symbolic parameter that could represent time
+        sym = unwrap(condition)
+        return symbolic_type(sym) != NotSymbolic() && !iscall(sym)
+    elseif T <: AbstractVector
+        # Check if it's a vector of symbolic parameters
+        return all(condition) do x
+            x isa Num && begin
+                sym = unwrap(x)
+                symbolic_type(sym) != NotSymbolic() && !iscall(sym)
+            end
+        end
+    else
+        false
+    end
+end
+
+function has_symbolic_timed_condition(condition)
+    return is_timed_condition(condition) || is_symbolic_timed_condition(condition)
 end
 
 to_cb_vector(cbs::Vector{<:AbstractCallback}; kwargs...) = cbs
@@ -667,10 +696,10 @@ function generate_continuous_callbacks(sys::AbstractSystem, dvs = unknowns(sys),
 end
 
 function generate_discrete_callbacks(sys::AbstractSystem, dvs = unknowns(sys),
-        ps = parameters(sys; initial_parameters = true); kwargs...)
+        ps = parameters(sys; initial_parameters = true); parameter_map = Dict(), kwargs...)
     dbs = discrete_events(sys)
     isempty(dbs) && return nothing
-    [generate_callback(db, sys; kwargs...) for db in dbs]
+    [generate_callback(db, sys; parameter_map, kwargs...) for db in dbs]
 end
 
 EMPTY_AFFECT(args...) = nothing
@@ -734,12 +763,32 @@ function generate_callback(cbs::Vector{SymbolicContinuousCallback}, sys; kwargs.
         rootfind = cbs[1].rootfind, initializealg = cbs[1].reinitializealg)
 end
 
-function generate_callback(cb, sys; kwargs...)
+function resolve_symbolic_timed_condition(condition, parameter_map)
+    if condition isa AbstractVector
+        return [get(parameter_map, c, c) for c in condition]
+    else
+        return get(parameter_map, condition, condition)
+    end
+end
+
+function generate_callback(cb, sys; parameter_map = Dict(), kwargs...)
     is_timed = is_timed_condition(conditions(cb))
+    is_symbolic_timed = is_symbolic_timed_condition(conditions(cb))
     dvs = unknowns(sys)
     ps = parameters(sys; initial_parameters = true)
 
-    trigger = is_timed ? conditions(cb) : compile_condition(cb, sys, dvs, ps; kwargs...)
+    trigger = if is_timed
+        conditions(cb)
+    elseif is_symbolic_timed
+        # Resolve symbolic parameters if provided, otherwise keep as-is for later resolution
+        if !isempty(parameter_map)
+            resolve_symbolic_timed_condition(conditions(cb), parameter_map)
+        else
+            conditions(cb)
+        end
+    else
+        compile_condition(cb, sys, dvs, ps; kwargs...)
+    end
     affect = compile_affect(cb.affect, cb, sys; default = EMPTY_AFFECT, kwargs...)
     affect_neg = if is_discrete(cb)
         nothing
@@ -756,12 +805,20 @@ function generate_callback(cb, sys; kwargs...)
     finalize = isnothing(cb.finalize) ? final : ((c, u, t, i) -> final(i))
 
     if is_discrete(cb)
-        if is_timed && conditions(cb) isa AbstractVector
+        # Check if we now have resolved numeric values after parameter substitution
+        trigger_is_timed = is_timed_condition(trigger) || (is_symbolic_timed && !is_symbolic_timed_condition(trigger))
+        
+        if trigger_is_timed && trigger isa AbstractVector
             return PresetTimeCallback(trigger, affect; initialize,
                 finalize, initializealg = cb.reinitializealg)
-        elseif is_timed
+        elseif trigger_is_timed
             return PeriodicCallback(
                 affect, trigger; initialize, finalize, initializealg = cb.reinitializealg)
+        elseif is_symbolic_timed && is_symbolic_timed_condition(trigger)
+            # Still symbolic - this means parameters weren't resolved, 
+            # which should be handled at problem creation time
+            error("Symbolic time parameters in discrete callback not resolved. " *
+                  "Please provide parameter values when creating the problem.")
         else
             return DiscreteCallback(trigger, affect; initialize,
                 finalize, initializealg = cb.reinitializealg)
@@ -980,9 +1037,9 @@ merge_cb(x, y) = CallbackSet(x, y)
 """
 Generate the CallbackSet for a ODESystem or SDESystem.
 """
-function process_events(sys; callback = nothing, kwargs...)
+function process_events(sys; callback = nothing, parameter_map = Dict(), kwargs...)
     contin_cbs = generate_continuous_callbacks(sys; kwargs...)
-    discrete_cbs = generate_discrete_callbacks(sys; kwargs...)
+    discrete_cbs = generate_discrete_callbacks(sys; parameter_map, kwargs...)
     cb = merge_cb(contin_cbs, callback)
     (discrete_cbs === nothing) ? cb : CallbackSet(contin_cbs, discrete_cbs...)
 end

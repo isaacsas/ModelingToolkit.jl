@@ -1419,3 +1419,73 @@ end
     @named sys = System([D(y) ~ 2x + 1, x^2 ~ 2y^3], t; discrete_events = [dev])
     sys = @test_nowarn mtkcompile(sys)
 end
+
+@testset "Symbolic Parameters in Discrete Callback Time Conditions" begin
+    # Test symbolic parameters in periodic callbacks
+    @testset "Periodic callback with symbolic parameter" begin
+        @parameters τ
+        @variables x(t)
+        
+        affect = [x ~ Pre(x) + 1]
+        cb = SymbolicDiscreteCallback(τ, affect)
+        
+        @named sys = System([D(x) ~ -x], t, [x], [τ], discrete_events = [cb])
+        sys = mtkcompile(sys)
+        
+        # Should work when parameter is provided
+        prob = ODEProblem(sys, [x => 1.0], (0.0, 3.0), [τ => 1.0])
+        sol = solve(prob, Tsit5())
+        
+        # Check that callback fired at expected times
+        @test length(sol.t) > 3  # Should have multiple time points due to events
+        @test minimum(t -> abs(t - 1.0), sol.t) < 1e-9
+        @test minimum(t -> abs(t - 2.0), sol.t) < 1e-9
+        # Value should have jumped by 1 at each event
+        @test abs(sol(0.9999)[x] + 1 - sol(1.0001)[x]) < 1e-6
+    end
+    
+    # Test symbolic parameters in preset time callbacks
+    @testset "Preset time callback with symbolic parameters" begin
+        @parameters t1 t2
+        @variables x(t)
+        
+        affect = [x ~ Pre(x) + 1] 
+        cb = SymbolicDiscreteCallback([t1, t2], affect)
+        
+        @named sys = System([D(x) ~ -x], t, [x], [t1, t2], discrete_events = [cb])
+        sys = mtkcompile(sys)
+        
+        # Should work when parameters are provided
+        prob = ODEProblem(sys, [x => 1.0], (0.0, 4.0), [t1 => 1.5, t2 => 2.8])
+        sol = solve(prob, Tsit5())
+        
+        # Check that callback fired at expected times
+        @test minimum(t -> abs(t - 1.5), sol.t) < 1e-9
+        @test minimum(t -> abs(t - 2.8), sol.t) < 1e-9
+        # Value should have jumped at each event
+        @test abs(sol(1.49)[x] + 1 - sol(1.51)[x]) < 1e-6
+        @test abs(sol(2.79)[x] + 1 - sol(2.81)[x]) < 1e-6
+    end
+    
+    # Test mixed symbolic and numeric callbacks
+    @testset "Mixed symbolic and numeric callbacks" begin
+        @parameters τ
+        @variables x(t)
+        
+        # One symbolic periodic, one numeric preset
+        cb1 = SymbolicDiscreteCallback(τ, [x ~ Pre(x) + 1])
+        cb2 = SymbolicDiscreteCallback([2.5], [x ~ Pre(x) - 0.5])
+        
+        @named sys = System([D(x) ~ 0], t, [x], [τ], discrete_events = [cb1, cb2])
+        sys = mtkcompile(sys)
+        
+        prob = ODEProblem(sys, [x => 0.0], (0.0, 4.0), [τ => 1.0])
+        sol = solve(prob, Tsit5())
+        
+        # Should fire at t=1,2,2.5,3,4
+        @test minimum(t -> abs(t - 1.0), sol.t) < 1e-9
+        @test minimum(t -> abs(t - 2.0), sol.t) < 1e-9
+        @test minimum(t -> abs(t - 2.5), sol.t) < 1e-9
+        @test minimum(t -> abs(t - 3.0), sol.t) < 1e-9
+    end
+end
